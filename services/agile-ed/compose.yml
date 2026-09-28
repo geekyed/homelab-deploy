@@ -1,0 +1,54 @@
+# Deployed contract for agile-ed on the mac mini. Authoritative: this file, not
+# the one in the agile-ed repo, is what the machine runs.
+#
+# Image-only by design. There is no `build:` key anywhere in this file, so the
+# mini cannot compile the app even by accident — the only thing that changes
+# here is a tag that already exists in the registry.
+#
+# Run through ../agile-ed.conf, which supplies the project name and the path to
+# the secrets file. Do not add a second service to this file: keeping one
+# compose project per service is what gives each its own network.
+
+services:
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  agile-ed:
+    # AGILE_ED_TAG is the rollback lever. Unset means follow whatever CI last
+    # pushed to :main. Pin it in .secrets/agile-ed.env to hold one known-good
+    # build; the previous sha tag is the value to pin.
+    image: ghcr.io/geekyed/agile-ed:${AGILE_ED_TAG:-main}
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+    ports:
+      # Loopback only. cloudflared is the sole ingress, which is the assumption
+      # the login rate limiter's header trust rests on — re-exposing this port
+      # to the LAN would let anything on it forge cf-connecting-ip.
+      - "127.0.0.1:3000:3000"
+    environment:
+      PORT: 3000
+      HOST: 0.0.0.0
+      # Hardcoded to the compose-internal name. A stray REDIS_URL in the secrets
+      # file cannot point the container at the wrong Redis.
+      REDIS_URL: redis://redis:6379
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?set ADMIN_PASSWORD in .secrets/agile-ed.env}
+      SESSION_TTL_DAYS: ${SESSION_TTL_DAYS:-30}
+      LOGIN_MAX_ATTEMPTS: ${LOGIN_MAX_ATTEMPTS:-5}
+      LOGIN_WINDOW_SECONDS: ${LOGIN_WINDOW_SECONDS:-900}
+      # True because cloudflared serves HTTPS. This is why the app is not
+      # reachable over plain http from outside the tunnel.
+      COOKIE_SECURE: "true"
+      TZ: Europe/London
+
+volumes:
+  redis-data:

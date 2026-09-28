@@ -1,0 +1,105 @@
+#!/usr/bin/env bash
+#
+# Manage the launchd agent that deploys one service on a schedule.
+#
+#   bin/register <service> install   # write the agent and load it (deploys at once)
+#   bin/register <service> run       # deploy now, without waiting for the interval
+#   bin/register <service> status    # is it loaded, and what did it last do
+#   bin/register <service> remove    # unload and delete the agent
+#
+# A LaunchAgent rather than a LaunchDaemon on purpose: OrbStack only runs inside
+# a logged-in session, so a system-wide daemon would fire every five minutes at a
+# Docker socket that is not there. This also means the mini needs an auto-login
+# user for either to work — see the README.
+#
+set -euo pipefail
+
+die() { printf '%s  register: %s\n' "$(date -u +%FT%TZ)" "$*" >&2; exit 1; }
+log() { printf '%s  register: %s\n' "$(date -u +%FT%TZ)" "$*"; }
+
+[ $# -eq 2 ] || die "usage: register <service> install|run|status|remove"
+SERVICE=$1
+ACTION=$2
+
+ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+CONF="$ROOT/services/$SERVICE.conf"
+[ -f "$CONF" ] || die "no such service: $CONF"
+# shellcheck source=/dev/null
+. "$CONF"
+
+: "${INTERVAL:=300}"
+: "${LABEL:=com.geekyed.$SERVICE.deploy}"
+
+SCRIPT="$ROOT/bin/deploy"
+PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
+DOMAIN="gui/$(id -u)"
+TARGET="$DOMAIN/$LABEL"
+LOG_DIR="$ROOT/logs"
+
+write_plist() {
+  mkdir -p "$HOME/Library/LaunchAgents" "$LOG_DIR"
+  # Unquoted heredoc so the values above expand. XML needs no shell escaping,
+  # so paths containing spaces are fine.
+  cat > "$PLIST" <<PLIST_EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>$LABEL</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>$SCRIPT</string>
+    <string>$SERVICE</string>
+  </array>
+  <key>StartInterval</key>
+  <integer>$INTERVAL</integer>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>ProcessType</key>
+  <string>Background</string>
+  <key>StandardOutPath</key>
+  <string>$LOG_DIR/$SERVICE.log</string>
+  <key>StandardErrorPath</key>
+  <string>$LOG_DIR/$SERVICE.err</string>
+</dict>
+</plist>
+PLIST_EOF
+}
+
+case "$ACTION" in
+  install)
+    write_plist
+    # bootout first so re-running install over a loaded agent is not an error
+    launchctl bootout "$TARGET" 2>/dev/null || true
+    launchctl bootstrap "$DOMAIN" "$PLIST"
+    log "installed $LABEL, every ${INTERVAL}s"
+    log "RunAtLoad is set so it is deploying now: tail -f $LOG_DIR/$SERVICE.log"
+    ;;
+  run)
+    if launchctl kickstart -k "$TARGET" 2>/dev/null; then
+      log "kickstarted $LABEL"
+    else
+      log "not loaded, running deploy directly"
+      "$SCRIPT" "$SERVICE"
+    fi
+    ;;
+  status)
+    launchctl list "$TARGET" 2>/dev/null || log "not loaded"
+    log "log: $LOG_DIR/$SERVICE.log"
+    if [ -f "$LOG_DIR/$SERVICE.log" ]; then
+      tail -n 20 "$LOG_DIR/$SERVICE.log"
+    else
+      log "no log yet"
+    fi
+    ;;
+  remove)
+    launchctl bootout "$TARGET" 2>/dev/null || true
+    rm -f "$PLIST"
+    log "removed $LABEL (containers left running, use docker compose ... down to stop them)"
+    ;;
+  *)
+    die "unknown action '$ACTION' (expected install, run, status or remove)"
+    ;;
+esac

@@ -1,0 +1,83 @@
+#!/usr/bin/env bash
+#
+# Deploy one service: pull its published image, roll it out, and put it back the
+# way it was if the new container never becomes healthy.
+#
+#   bin/deploy <service>
+#
+# Safe to run as often as you like. When the image has not changed, `pull` is a
+# no-op and `up` leaves the running container alone, so this is idempotent.
+#
+# The ordering is the whole point, and none of it is incidental:
+#
+#   1. a failed pull exits before any `up` runs, so an expired registry token
+#      causes a missed deploy rather than an outage
+#   2. `up --wait` blocks on the container healthcheck, so a success here means
+#      healthy, not merely started
+#   3. a container that never goes healthy is rolled back to the image the
+#      previous container was actually running
+#
+set -euo pipefail
+
+die() { printf '%s  deploy: %s\n' "$(date -u +%FT%TZ)" "$*" >&2; exit 1; }
+log() { printf '%s  deploy: %s\n' "$(date -u +%FT%TZ)" "$*"; }
+
+[ $# -eq 1 ] || die "usage: deploy <service>"
+SERVICE=$1
+
+ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+CONF="$ROOT/services/$SERVICE.conf"
+[ -f "$CONF" ] || die "no such service: $CONF"
+# shellcheck source=/dev/null
+. "$CONF"
+
+: "${COMPOSE_SERVICE:=$SERVICE}"
+: "${PROJECT:=$SERVICE}"
+: "${COMPOSE_FILE:=services/$SERVICE/compose.yml}"
+: "${ENV_FILE:=.secrets/$SERVICE.env}"
+: "${HEALTH_TIMEOUT:=90}"
+
+abspath() { case "$1" in /*) printf '%s\n' "$1" ;; *) printf '%s/%s\n' "$ROOT" "$1" ;; esac; }
+COMPOSE_FILE=$(abspath "$COMPOSE_FILE")
+ENV_FILE=$(abspath "$ENV_FILE")
+
+[ -f "$COMPOSE_FILE" ] || die "missing compose file: $COMPOSE_FILE"
+[ -f "$ENV_FILE" ] || die "missing secrets file: $ENV_FILE (create it on this machine; never commit it)"
+
+command -v docker >/dev/null 2>&1 || die "docker not on PATH — is OrbStack running?"
+docker compose up --help 2>&1 | grep -q -- --wait-timeout \
+  || die "docker compose is too old, needs --wait-timeout (compose v2.17+)"
+
+dc() { docker compose -p "$PROJECT" -f "$COMPOSE_FILE" --env-file "$ENV_FILE" "$@"; }
+
+# Image identity comes from the running container, not from parsing compose
+# output. `Image` is the content-addressed id we re-tag, and `Config.Image` is
+# the reference compose created the container from, which is precisely the name
+# a rollback has to put the old id back under.
+CONTAINER=$(dc ps -q "$COMPOSE_SERVICE" 2>/dev/null || true)
+PREV_ID=$(docker inspect -f '{{.Image}}' "$CONTAINER" 2>/dev/null || true)
+PREV_REF=$(docker inspect -f '{{.Config.Image}}' "$CONTAINER" 2>/dev/null || true)
+
+log "pulling $SERVICE"
+if ! dc pull "$COMPOSE_SERVICE"; then
+  log "pull failed, leaving the running image in place"
+  exit 0
+fi
+
+if dc up -d --wait --wait-timeout "$HEALTH_TIMEOUT"; then
+  NEW=$(docker inspect -f '{{.Image}}' "$(dc ps -q "$COMPOSE_SERVICE")" 2>/dev/null || echo unknown)
+  if [ "$NEW" = "$PREV_ID" ]; then
+    log "no change, already on $NEW"
+  else
+    log "deployed ${PREV_REF:-none} -> $NEW"
+  fi
+  exit 0
+fi
+
+log "not healthy within ${HEALTH_TIMEOUT}s"
+[ -n "$PREV_ID" ] || die "nothing to roll back to; left in place for inspection"
+log "rolling back to $PREV_REF ($PREV_ID)"
+docker tag "$PREV_ID" "$PREV_REF"
+dc up -d --wait --wait-timeout "$HEALTH_TIMEOUT" \
+  || log "rollback did not come up healthy either — check: docker compose -p $PROJECT -f $COMPOSE_FILE logs $COMPOSE_SERVICE"
+log "rolled back to $PREV_REF"

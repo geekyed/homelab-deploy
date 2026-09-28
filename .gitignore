@@ -1,0 +1,5 @@
+# Secrets live here on the mini. Never commit this directory.
+.secrets/
+
+# launchd redirects agent output here.
+logs/
