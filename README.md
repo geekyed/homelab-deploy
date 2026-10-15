@@ -81,16 +81,16 @@ there.
 **2. Get a registry token.**
 
 You need read access to the packages, nothing more. In GitHub: Settings →
-Developer settings → Personal access tokens. Fine-grained tokens have package
-permissions and are the better choice; if the registry login is refused with a
-scope error, fall back to a classic token with the `read:packages` scope.
+Developer settings → Personal access tokens. Create a classic token with only
+the `read:packages` scope — fine-grained tokens do not authenticate to the
+Container registry, and the `repo` scope is broader than needed.
 
 **3. Clone this repo and log in.**
 
 ```bash
 git clone git@github.com:geekyed/homelab-deploy.git ~/dev/homelab-deploy
 cd ~/dev/homelab-deploy
-docker login ghcr.io -u geekyed --password-stdin   # paste the token
+echo "$CR_PAT" | docker login ghcr.io -u geekyed --password-stdin
 ```
 
 `~/.docker/config.json` now holds that token. It is the only credential this
