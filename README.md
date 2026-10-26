@@ -50,6 +50,26 @@ the *platform* does about it: where files are, how long to wait, how often to
 poll. Keeping the image tag next to the port bindings means a rollback is one
 reviewed edit rather than two files agreeing on a variable.
 
+## Services
+
+| Service | Image | Loopback | Notes |
+|---|---|---|---|
+| `agile-ed` | `ghcr.io/geekyed/agile-ed` | `127.0.0.1:3000` | App plus Redis; needs `.secrets/agile-ed.env`. |
+| `edward-weston-cv` | `ghcr.io/geekyed/edward-weston-cv` | `127.0.0.1:8081` | Static CV; no secrets, but the env file must exist. |
+
+The CV is published at `https://cv.edweston.uk` through the same cloudflared
+tunnel, with a dashboard rule mapping that hostname to
+`http://127.0.0.1:8081`. Tunnel rules are configured in Cloudflare, not in this
+repo.
+
+`edward-weston-cv` is the first service with nothing to keep secret. `bin/deploy`
+still requires its env file to exist, so on the mini:
+
+```bash
+mkdir -p .secrets
+touch .secrets/edward-weston-cv.env
+```
+
 ## Why each service gets its own compose project
 
 `bin/deploy` passes `-p "$PROJECT"` explicitly. That gives every service its own
@@ -151,6 +171,10 @@ checkout, re-run `install`.
 Every `INTERVAL` seconds (300 by default) launchd runs `bin/deploy <service>`.
 There is no webhook and nothing inbound reaches the machine.
 
+launchd does not pull this repo. After changing a compose file or conf, run
+`git pull` in `~/dev/homelab-deploy` on the mini; the next tick uses the new
+contract.
+
 - `docker compose pull` — a no-op if the tag has not moved.
 - `docker compose up -d --wait` — recreates only the containers whose image or
   config actually changed, then blocks until they are healthy. Unchanged services
@@ -184,7 +208,8 @@ AGILE_ED_TAG=8598b8b...    # a :<sha> tag from a previous build
 ```
 
 The previous sha tag is always published alongside `:main`, so there is always
-something to go back to. Unset the variable to follow `:main` again.
+something to go back to. Unset the variable to follow `:main` again. The CV uses
+the same pattern with `EDWARD_WESTON_CV_TAG`.
 
 **Reviewed — revert the compose.** Edit the `image:` line in
 `services/agile-ed/compose.yml` back to the sha tag, commit, and let launchd pick
@@ -217,6 +242,10 @@ Rollback depends on the previous image still being on disk, which means:
          setup: <install command>
          validate: <gate command>
    ```
+
+   If the service builds static files in an earlier job, add
+   `artifact: <artifact-name>` so the reusable workflow unpacks that artifact
+   into the build context before `docker build`. The CV workflow is the example.
 
 2. Write `services/<name>/compose.yml` in this repo. Image-only, no `build:`.
    Publish its ports on loopback if a tunnel fronts it.
@@ -251,8 +280,9 @@ Rollback depends on the previous image still being on disk, which means:
   suits an Apple Silicon mini. An Intel machine wants `platform: linux/amd64` at
   the call site.
 - **Not a general CI framework.** `publish.yml` can optionally set up Bun to run a
-  gate. A service in another language leaves `validate` empty and gets no
-  toolchain, and building it means extending this workflow.
+  gate, or unpack a prebuilt artifact from an earlier job. A service in another
+  language still needs its own build job and a Dockerfile that packages the
+  result.
 - **Config changes span two repos.** A new environment variable is a change in
   the service repo and a change here. `up --wait` fails loudly if a required one
   is missing, so it cannot fail silently.

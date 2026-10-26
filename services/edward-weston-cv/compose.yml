@@ -1,0 +1,24 @@
+# Deployed contract for the CV on the mac mini. Authoritative: this file, not
+# the one in the Edward-Weston-CV repo, is what the machine runs.
+#
+# Image-only by design. The mini only pulls a published image; it never builds
+# the site. The image is a static nginx server carrying index.html and the PDF.
+#
+# Run through ../edward-weston-cv.conf, which supplies the project name and the
+# path to the (empty) secrets file.
+
+services:
+  edward-weston-cv:
+    # EDWARD_WESTON_CV_TAG is the rollback lever. Unset means follow whatever CI
+    # last pushed to :main. Pin it in .secrets/edward-weston-cv.env to hold one
+    # known-good build; the previous sha tag is the value to pin.
+    image: ghcr.io/geekyed/edward-weston-cv:${EDWARD_WESTON_CV_TAG:-main}
+    restart: unless-stopped
+    ports:
+      # Loopback only. cloudflared is the sole ingress; the container has no
+      # reason to be reachable from the LAN.
+      - "127.0.0.1:8081:8080"
+
+    # The image carries its own healthcheck (wget against :8080), which is what
+    # `docker compose up --wait` gates on. No secrets or volumes are needed at
+    # runtime; the deploy script still expects the empty env file to exist.

@@ -15,6 +15,10 @@ name: publish image
 #         setup: bun install --frozen-lockfile
 #         validate: bun run check
 #
+# A static service can build its files in an earlier job and pass `artifact:`
+# to have that artifact unpacked into the build context before `docker build`.
+# The image build then needs no language toolchain of its own.
+#
 # A called workflow can only ever NARROW the permissions its caller grants, it
 # cannot widen them. So the `permissions:` block above has to be in the calling
 # job as well, or the push to the registry fails with 403 even though this
@@ -46,6 +50,11 @@ on:
         required: false
         default: 'Dockerfile'
         type: string
+      artifact:
+        description: 'Optional artifact from this workflow run to unpack into the build context'
+        required: false
+        default: ''
+        type: string
       setup:
         description: 'Dependency install command, run before validate. Skipped if empty.'
         required: false
@@ -76,6 +85,15 @@ jobs:
       packages: write
     steps:
       - uses: actions/checkout@v4
+
+      # Same-run artifacts use the runtime token, so this needs no extra
+      # permission and works for a called workflow in the caller's run.
+      - name: download build artifact
+        if: ${{ inputs.artifact != '' }}
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.artifact }}
+          path: ${{ inputs.context }}
 
       # The toolchain exists only to run the gate, so a service with no
       # `validate` gets no Bun and no install step at all.
