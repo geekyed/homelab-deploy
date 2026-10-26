@@ -44,6 +44,15 @@ ENV_FILE=$(abspath "$ENV_FILE")
 [ -f "$COMPOSE_FILE" ] || die "missing compose file: $COMPOSE_FILE"
 [ -f "$ENV_FILE" ] || die "missing secrets file: $ENV_FILE (create it on this machine; never commit it)"
 
+# OrbStack installs docker in non-standard locations and launchd runs with a
+# minimal PATH, so add the likely spots before looking for docker.
+for docker_dir in \
+  "$HOME/.orbstack/bin" \
+  /opt/orbstack/bin \
+  /usr/local/bin \
+  /Applications/OrbStack.app/Contents/Resources/bin; do
+  [ -x "$docker_dir/docker" ] && PATH="$docker_dir:$PATH"
+done
 command -v docker >/dev/null 2>&1 || die "docker not on PATH — is OrbStack running?"
 docker compose up --help 2>&1 | grep -q -- --wait-timeout \
   || die "docker compose is too old, needs --wait-timeout (compose v2.17+)"
