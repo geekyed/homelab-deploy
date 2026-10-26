@@ -1,0 +1,57 @@
+# Deployed contract for notion-discord on the mac mini. Authoritative: this file,
+# not the one in the notion-discord repo, is what the machine runs.
+#
+# Image-only by design. There is no `build:` key, so the mini never compiles the
+# app. CI publishes ghcr.io/geekyed/notion-discord.
+#
+# The project name (`notion-discord`) and service names (`app`, `redis`)
+# deliberately match the old manual compose. The first homelab deploy therefore
+# adopts the existing containers and, crucially, the existing Redis volume that
+# holds the Notion verification tokens.
+
+services:
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  app:
+    # NOTION_DISCORD_TAG is the rollback lever. Unset means follow whatever CI
+    # last pushed to :main. Pin it in .secrets/notion-discord.env to hold one
+    # known-good build; the previous sha tag is the value to pin.
+    image: ghcr.io/geekyed/notion-discord:${NOTION_DISCORD_TAG:-main}
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+    ports:
+      # Loopback only. cloudflared is the sole ingress; the app has no reason to
+      # be reachable from the LAN.
+      - "127.0.0.1:8080:8080"
+    environment:
+      ASPNETCORE_URLS: "http://+:8080"
+      App__NotionApiKey: "${NOTION_API_KEY:?set NOTION_API_KEY in .secrets/notion-discord.env}"
+      App__NotionApiVersion: "${NOTION_API_VERSION:-2022-06-28}"
+      App__DiscordWebhookUrl: "${DISCORD_WEBHOOK_URL:?set DISCORD_WEBHOOK_URL in .secrets/notion-discord.env}"
+      # Hardcoded to the compose-internal name. A stray Redis URL in the secrets
+      # file cannot point the container at the wrong Redis.
+      App__RedisConnectionString: "redis:6379"
+      App__BatchIntervalSeconds: "${BATCH_INTERVAL_SECONDS:-120}"
+      # Additional tenants. Leave TENANT0_KEY empty to skip seeding.
+      App__Tenants__0__Key: "${TENANT0_KEY:-}"
+      App__Tenants__0__NotionApiKey: "${TENANT0_NOTION_API_KEY:-}"
+      App__Tenants__0__DiscordWebhookUrl: "${TENANT0_DISCORD_WEBHOOK_URL:-}"
+      TZ: "Europe/London"
+
+volumes:
+  redis-data:
+    # Pin the name so a future PROJECT rename cannot silently create a new empty
+    # volume and lose the Notion verification tokens. This is the volume the
+    # original manual deployment created.
+    name: notion-discord_redis-data

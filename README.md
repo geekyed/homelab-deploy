@@ -56,6 +56,7 @@ reviewed edit rather than two files agreeing on a variable.
 |---|---|---|---|
 | `agile-ed` | `ghcr.io/geekyed/agile-ed` | `127.0.0.1:3000` | App plus Redis; needs `.secrets/agile-ed.env`. |
 | `edward-weston-cv` | `ghcr.io/geekyed/edward-weston-cv` | `127.0.0.1:8081` | Static CV; no secrets, but the env file must exist. |
+| `notion-discord` | `ghcr.io/geekyed/notion-discord` | `127.0.0.1:8080` | .NET app plus Redis; stateful Redis volume; needs `.secrets/notion-discord.env`. |
 
 The CV is published at `https://cv.edweston.uk` through the same cloudflared
 tunnel, with a dashboard rule mapping that hostname to
@@ -70,6 +71,19 @@ mkdir -p .secrets
 touch .secrets/edward-weston-cv.env
 ```
 
+`notion-discord` is published at `https://nd.edweston.uk` through the same
+tunnel, mapping to `http://127.0.0.1:8080`. If the existing rule says
+`localhost:8080`, change it to `127.0.0.1:8080` so it matches the IPv4 loopback
+binding.
+
+`notion-discord` is the stateful one: its Redis volume holds Notion verification
+tokens and queued events. The deployed compose pins the volume name to
+`notion-discord_redis-data`, the volume the original manual deployment created.
+Do not change that name or run `docker compose down -v`. The first migration
+from the manual setup is documented in the notion-discord repo's `DEPLOY.md`.
+Follow that manual cutover before running `./bin/register notion-discord install`;
+`install` runs `bin/deploy` immediately.
+
 ## Why each service gets its own compose project
 
 `bin/deploy` passes `-p "$PROJECT"` explicitly. That gives every service its own
@@ -81,7 +95,9 @@ mint a fresh rate-limit bucket per request, silently defeating the brute-force
 protection. The separate network is what keeps that assumption true.
 
 The other reason: `docker compose down -v` in a shared project would destroy
-every service's volumes, not just the one you meant.
+every service's volumes, not just the one you meant. For `notion-discord`, that
+volume holds the Notion verification tokens; losing it means re-verifying every
+webhook.
 
 ## Bootstrap the mini (once)
 
@@ -134,6 +150,17 @@ ADMIN_PASSWORD='the-real-one'
 # AGILE_ED_TAG=          # leave unset to follow :main; see Rollback
 ```
 
+For `notion-discord`, copy the existing manual env file rather than retyping it:
+
+```bash
+install -m 600 ~/Projects/notion-discord/.env .secrets/notion-discord.env
+```
+
+The file uses the same variable names the manual compose used: `NOTION_API_KEY`,
+`DISCORD_WEBHOOK_URL`, optional `TENANT0_*`, and optional
+`BATCH_INTERVAL_SECONDS`. See the notion-discord repo's `DEPLOY.md` before the
+first cutover.
+
 `.secrets/` is gitignored. This file is the only thing you must never commit.
 
 ## Install a service
@@ -161,6 +188,12 @@ and deploys immediately because `RunAtLoad` is set. Watch it happen:
 
 ```bash
 curl -fsS http://127.0.0.1:3000/health
+```
+
+For `notion-discord`, the health endpoint is `/`:
+
+```bash
+curl -fsS http://127.0.0.1:8080/
 ```
 
 Note the plist embeds this repo's absolute path. If you move or rename the
@@ -209,7 +242,8 @@ AGILE_ED_TAG=8598b8b...    # a :<sha> tag from a previous build
 
 The previous sha tag is always published alongside `:main`, so there is always
 something to go back to. Unset the variable to follow `:main` again. The CV uses
-the same pattern with `EDWARD_WESTON_CV_TAG`.
+the same pattern with `EDWARD_WESTON_CV_TAG`; `notion-discord` uses
+`NOTION_DISCORD_TAG`.
 
 **Reviewed — revert the compose.** Edit the `image:` line in
 `services/agile-ed/compose.yml` back to the sha tag, commit, and let launchd pick
@@ -247,6 +281,10 @@ Rollback depends on the previous image still being on disk, which means:
    `artifact: <artifact-name>` so the reusable workflow unpacks that artifact
    into the build context before `docker build`. The CV workflow is the example.
 
+   A compiled service can run its own compile gate before the publish job and
+   still call the reusable workflow with only `image:`. The notion-discord
+   workflow is the example.
+
 2. Write `services/<name>/compose.yml` in this repo. Image-only, no `build:`.
    Publish its ports on loopback if a tunnel fronts it.
 
@@ -261,7 +299,7 @@ Rollback depends on the previous image still being on disk, which means:
 | Symptom | Cause and fix |
 |---|---|
 | `deploy: pull failed, leaving the running image in place` | Token expired or package access revoked. `docker login ghcr.io` again on the mini. Nothing was restarted. |
-| `deploy: not healthy within 90s` then a rollback | The new image is bad. Check `logs/<name>.err` and `docker compose -p <project> logs <service>`. The old image is already back up. |
+| `deploy: not healthy within the configured timeout` then a rollback | The new image is bad. Check `logs/<name>.err` and `docker compose -p <project> logs <service>`. The old image is already back up. |
 | `deploy: nothing to roll back to` | First ever deploy failed. Nothing was running before it, so there is nothing to restore. Fix and re-run. |
 | `deploy: missing secrets file` | `.secrets/<name>.env` does not exist on the machine running `deploy`. |
 | `deploy: docker not on PATH` | OrbStack is not running, or the mini rebooted without an auto-login. |
@@ -282,7 +320,8 @@ Rollback depends on the previous image still being on disk, which means:
 - **Not a general CI framework.** `publish.yml` can optionally set up Bun to run a
   gate, or unpack a prebuilt artifact from an earlier job. A service in another
   language still needs its own build job and a Dockerfile that packages the
-  result.
+  result. `notion-discord` is the .NET example: a compile job in the service repo,
+  then the reusable image build.
 - **Config changes span two repos.** A new environment variable is a change in
   the service repo and a change here. `up --wait` fails loudly if a required one
   is missing, so it cannot fail silently.
