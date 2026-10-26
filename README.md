@@ -22,7 +22,7 @@ They do not contain anything about how the mini is wired up.
                     │
                     │  polled every 300s by launchd
                     ▼
-  mac mini:  ~/dev/homelab-deploy
+  mac mini:  ~/Projects/homelab-deploy
               services/agile-ed/compose.yml   ◄── the only compose that matters
               services/agile-ed.conf
               bin/deploy agile-ed
@@ -124,8 +124,8 @@ Container registry, and the `repo` scope is broader than needed.
 **3. Clone this repo and log in.**
 
 ```bash
-git clone git@github.com:geekyed/homelab-deploy.git ~/dev/homelab-deploy
-cd ~/dev/homelab-deploy
+git clone git@github.com:geekyed/homelab-deploy.git ~/Projects/homelab-deploy
+cd ~/Projects/homelab-deploy
 echo "$CR_PAT" | docker login ghcr.io -u geekyed --password-stdin
 ```
 
@@ -173,7 +173,7 @@ anything — that is the intended behaviour, not a bug. Publish, then install.
 **2. Load the agent.**
 
 ```bash
-cd ~/dev/homelab-deploy
+cd ~/Projects/homelab-deploy
 ./bin/register agile-ed install
 ```
 
@@ -205,7 +205,7 @@ Every `INTERVAL` seconds (300 by default) launchd runs `bin/deploy <service>`.
 There is no webhook and nothing inbound reaches the machine.
 
 launchd does not pull this repo. After changing a compose file or conf, run
-`git pull` in `~/dev/homelab-deploy` on the mini; the next tick uses the new
+`git pull` in `~/Projects/homelab-deploy` on the mini; the next tick uses the new
 contract.
 
 - `docker compose pull` — a no-op if the tag has not moved.
